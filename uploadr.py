@@ -134,8 +134,6 @@ class Uploadr:
         """
         self.token = self.getCachedToken()
 
-
-
     def signCall(self, data):
         """
         Signs args via md5 per http://www.flickr.com/services/api/auth.spec.html (Section 8)
@@ -322,32 +320,6 @@ class Uploadr:
                 print(str(sys.exc_info()))
             return False
 
-    def removeDeletedMedia(self):
-        """ Remove files deleted at the local source
-        loop through database
-        check if file exists
-        if exists, continue
-        if not exists, delete photo from fickr
-        http://www.flickr.com/services/api/flickr.photos.delete.html
-        """
-
-        print("*****Removing deleted files*****")
-
-        if (not self.checkToken()):
-            self.authenticate()
-        con = lite.connect(DB_PATH)
-        con.text_factory = str
-
-        with con:
-            cur = con.cursor()
-            cur.execute("SELECT files_id, path FROM files")
-            rows = cur.fetchall()
-
-            for row in rows:
-                if (not os.path.isfile(row[1].decode('utf-8'))):
-                    success = self.deleteFile(row, cur)
-        print("*****Completed deleted files*****")
-
     def upload(self):
         """ upload
         """
@@ -488,7 +460,8 @@ class Uploadr:
                         "title": str(FLICKR["title"]),
                         "description": str(FLICKR["description"]),
                         # replace commas to avoid tags conflicts
-                        "tags": '{} {} checksum:{}'.format(FLICKR["tags"], setName.encode('utf-8'), file_checksum).replace(',', ''),
+                        "tags": '{} {} checksum:{}'.format(FLICKR["tags"], setName.encode('utf-8'),
+                                                           file_checksum).replace(',', ''),
                         "is_public": str(FLICKR["is_public"]),
                         "is_friend": str(FLICKR["is_friend"]),
                         "is_family": str(FLICKR["is_family"])
@@ -628,50 +601,6 @@ class Uploadr:
 
         return success
 
-    def deleteFile(self, file, cur):
-        success = False
-        print("Deleting file: " + file[1].decode('utf-8'))
-
-        try:
-            d = {
-                # FIXME: double format?
-                "auth_token": str(self.token),
-                "perms": str(self.perms),
-                "format": "rest",
-                "method": "flickr.photos.delete",
-                "photo_id": str(file[0]),
-                "format": "json",
-                "nojsoncallback": "1"
-            }
-            sig = self.signCall(d)
-            url = self.urlGen(api.rest, d, sig)
-            res = self.getResponse(url)
-            if (self.isGood(res)):
-
-                # Find out if the file is the last item in a set, if so, remove the set from the local db
-                cur.execute("SELECT set_id FROM files WHERE files_id = ?", (file[0],))
-                row = cur.fetchone()
-                cur.execute("SELECT set_id FROM files WHERE set_id = ?", (row[0],))
-                rows = cur.fetchall()
-                if (len(rows) == 1):
-                    print("File is the last of the set, deleting the set ID: " + str(row[0]))
-                    cur.execute("DELETE FROM sets WHERE set_id = ?", (row[0],))
-
-                # Delete file record from the local db
-                cur.execute("DELETE FROM files WHERE files_id = ?", (file[0],))
-                print("Successful deletion.")
-                success = True
-            else:
-                if (res['code'] == 1):
-                    # File already removed from Flicker
-                    cur.execute("DELETE FROM files WHERE files_id = ?", (file[0],))
-                else:
-                    self.reportError(res)
-        except:
-            # If you get 'attempt to write a readonly database', set 'admin' as owner of the DB file (fickerdb) and 'users' as group
-            print(str(sys.exc_info()))
-        return success
-
     def logSetCreation(self, setId, setName, primaryPhotoId, cur, con):
         print("adding set to log: " + setName.decode('utf-8'))
 
@@ -768,41 +697,6 @@ class Uploadr:
             self.upload()
             print("Last check: " + str(time.asctime(time.localtime())))
             time.sleep(SLEEP_TIME)
-
-    def createSets(self):
-        print('*****Creating Sets*****')
-
-        con = lite.connect(DB_PATH)
-        con.text_factory = str
-        with con:
-
-            cur = con.cursor()
-            cur.execute("SELECT files_id, path, set_id FROM files")
-
-            files = cur.fetchall()
-
-            for row in files:
-                if FULL_SET_NAME:
-                    setName = os.path.relpath(os.path.dirname(row[1]), FILES_DIR)
-                else:
-                    head, setName = os.path.split(os.path.dirname(row[1]))
-                newSetCreated = False
-
-                cur.execute("SELECT set_id, name FROM sets WHERE name = ?", (setName,))
-
-                set = cur.fetchone()
-
-                if set == None:
-                    setId = self.createSet(setName, row[0], cur, con)
-                    print("Created the set: " + setName.decode('utf-8'))
-                    newSetCreated = True
-                else:
-                    setId = set[0]
-
-                if row[2] == None and newSetCreated == False:
-                    print("adding file to set " + row[1].decode('utf-8'))
-                    self.addFileToSet(setId, row, cur)
-        print('*****Completed creating sets*****')
 
     def addFileToSet(self, setId, file, cur):
         try:
@@ -912,24 +806,6 @@ class Uploadr:
                 m.update(data)
             return m.hexdigest()
 
-    # Method to clean unused sets
-    def removeUselessSetsTable(self):
-        print('*****Removing empty Sets from DB*****')
-
-        con = lite.connect(DB_PATH)
-        con.text_factory = str
-        with con:
-            cur = con.cursor()
-            cur.execute("SELECT set_id, name FROM sets WHERE set_id NOT IN (SELECT set_id FROM files)")
-            unusedsets = cur.fetchall()
-
-            for row in unusedsets:
-                print("Unused set spotted about to be deleted: " + str(row[0]) + " (" + row[1].decode('utf-8') + ")")
-                cur.execute("DELETE FROM sets WHERE set_id = ?", (row[0],))
-            con.commit()
-
-        print('*****Completed removing empty Sets from DB*****')
-
     # Display Sets
     def displaySets(self):
         con = lite.connect(DB_PATH)
@@ -940,42 +816,6 @@ class Uploadr:
             allsets = cur.fetchall()
             for row in allsets:
                 print("Set: " + str(row[0]) + "(" + row[1] + ")")
-
-    # Get sets from Flickr
-    def getFlickrSets(self):
-        print('*****Adding Flickr Sets to DB*****')
-        con = lite.connect(DB_PATH)
-        con.text_factory = str
-        try:
-            d = {
-                "auth_token": str(self.token),
-                "perms": str(self.perms),
-                "format": "json",
-                "nojsoncallback": "1",
-                "method": "flickr.photosets.getList"
-            }
-            url = self.urlGen(api.rest, d, self.signCall(d))
-            res = self.getResponse(url)
-            if (self.isGood(res)):
-                cur = con.cursor()
-                for row in res['photosets']['photoset']:
-                    setId = row['id']
-                    setName = row['title']['_content']
-                    primaryPhotoId = row['primary']
-                    cur.execute("SELECT set_id FROM sets WHERE set_id = '" + setId + "'")
-                    foundSets = cur.fetchone()
-                    if foundSets == None:
-                        print(u"Adding set #{0} ({1}) with primary photo #{2}".format(setId, setName, primaryPhotoId))
-                        cur.execute("INSERT INTO sets (set_id, name, primary_photo_id) VALUES (?,?,?)",
-                                    (setId, setName, primaryPhotoId))
-                con.commit()
-                con.close()
-            else:
-                print(d)
-                self.reportError(res)
-        except:
-            print(str(sys.exc_info()))
-        print('*****Completed adding Flickr Sets to DB*****')
 
     def photos_search(self, checksum):
         data = {
@@ -1120,15 +960,9 @@ if __name__ == "__main__":
     else:
         if not flick.checkToken():
             flick.authenticate()
-        # flick.displaySets()
 
-        flick.removeUselessSetsTable()
-        flick.getFlickrSets()
         flick.convertRawFiles()
         flick.upload()
-        flick.removeDeletedMedia()
-        flick.createSets()
         flick.print_stat()
-
 
 print("--------- End time: " + time.strftime("%c") + " ---------")
